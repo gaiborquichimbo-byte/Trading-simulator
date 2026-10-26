@@ -1,0 +1,845 @@
+<!DOCTYPE html>
+<html lang="es" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ApexTrade Terminal</title>
+  <meta name="description" content="Plataforma web profesional de trading en tiempo real con gráficos interactivos de velas y barras, libro de órdenes, operaciones y posiciones en vivo." />
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['"Plus Jakarta Sans"', 'system-ui', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'monospace'],
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- Fuentes Tipográficas Oficiales -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+
+  <!-- React 18 & Babel para ejecución instantánea -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <style>
+    body {
+      font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+      background-color: #020617;
+      color: #f1f5f9;
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+    }
+    .font-mono, .tabular-nums {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-variant-numeric: tabular-nums;
+    }
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: #090d16; }
+    ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #334155; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 antialiased selection:bg-emerald-500/20 selection:text-emerald-300">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useMemo, useCallback } = React;
+
+    // --- Efectos de Sonido Web Audio API ---
+    let audioCtx = null;
+    let soundEnabled = true;
+    function getAudioContext() {
+      if (!audioCtx) {
+        const AudioClass = window.AudioContext || window.webkitAudioContext;
+        if (AudioClass) audioCtx = new AudioClass();
+      }
+      if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+      return audioCtx;
+    }
+    function playOrderSound(side) {
+      if (!soundEnabled) return;
+      try {
+        const ctx = getAudioContext();
+        if (!ctx) return;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        const now = ctx.currentTime;
+        osc.type = 'triangle';
+        if (side === 'buy') {
+          osc.frequency.setValueAtTime(520, now);
+          osc.frequency.exponentialRampToValueAtTime(880, now + 0.12);
+        } else {
+          osc.frequency.setValueAtTime(740, now);
+          osc.frequency.exponentialRampToValueAtTime(420, now + 0.12);
+        }
+        gain.gain.setValueAtTime(0.12, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+        osc.start(now);
+        osc.stop(now + 0.15);
+      } catch(e){}
+    }
+    function playSuccessChime() {
+      if (!soundEnabled) return;
+      try {
+        const ctx = getAudioContext();
+        if (!ctx) return;
+        const now = ctx.currentTime;
+        [659.25, 880, 1046.5].forEach((freq, i) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(freq, now + i * 0.06);
+          gain.gain.setValueAtTime(0.08, now + i * 0.06);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.06 + 0.2);
+          osc.start(now + i * 0.06);
+          osc.stop(now + i * 0.06 + 0.2);
+        });
+      } catch(e){}
+    }
+    function playAlertSound() {
+      if (!soundEnabled) return;
+      try {
+        const ctx = getAudioContext();
+        if (!ctx) return;
+        const now = ctx.currentTime;
+        [880, 1174.66, 1318.51].forEach((freq, i) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.type = 'triangle';
+          osc.frequency.setValueAtTime(freq, now + i * 0.08);
+          gain.gain.setValueAtTime(0.14, now + i * 0.08);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.08 + 0.35);
+          osc.start(now + i * 0.08);
+          osc.stop(now + i * 0.08 + 0.35);
+        });
+      } catch(e){}
+    }
+
+    // --- Datos de Mercado ---
+    const INITIAL_ASSETS = [
+      { id: 'btc-usdt', symbol: 'BTC/USDT', name: 'Bitcoin', category: 'crypto', price: 68450.5, change24h: 3.42, change24hAmount: 2265.0, high24h: 69120.0, low24h: 65980.0, volume24h: 1482930200, decimals: 2, minOrder: 0.001, baseAsset: 'BTC', quoteAsset: 'USDT' },
+      { id: 'eth-usdt', symbol: 'ETH/USDT', name: 'Ethereum', category: 'crypto', price: 3542.8, change24h: -1.18, change24hAmount: -42.3, high24h: 3620.0, low24h: 3480.0, volume24h: 849204000, decimals: 2, minOrder: 0.01, baseAsset: 'ETH', quoteAsset: 'USDT' },
+      { id: 'sol-usdt', symbol: 'SOL/USDT', name: 'Solana', category: 'crypto', price: 178.45, change24h: 7.64, change24hAmount: 12.67, high24h: 182.5, low24h: 164.2, volume24h: 421005000, decimals: 2, minOrder: 0.1, baseAsset: 'SOL', quoteAsset: 'USDT' },
+      { id: 'eur-usd', symbol: 'EUR/USD', name: 'Euro / Dólar USA', category: 'forex', price: 1.0845, change24h: 0.22, change24hAmount: 0.0024, high24h: 1.0872, low24h: 1.0815, volume24h: 5820490000, decimals: 4, minOrder: 100, baseAsset: 'EUR', quoteAsset: 'USD' },
+      { id: 'nvda', symbol: 'NVDA', name: 'NVIDIA Corporation', category: 'stock', price: 138.25, change24h: 4.12, change24hAmount: 5.47, high24h: 140.1, low24h: 133.5, volume24h: 2154000000, decimals: 2, minOrder: 1, baseAsset: 'NVDA', quoteAsset: 'USD' },
+      { id: 'aapl', symbol: 'AAPL', name: 'Apple Inc.', category: 'stock', price: 231.6, change24h: -0.65, change24hAmount: -1.52, high24h: 234.2, low24h: 229.8, volume24h: 1845000000, decimals: 2, minOrder: 1, baseAsset: 'AAPL', quoteAsset: 'USD' },
+    ];
+
+    function formatPrice(p, dec = 2) {
+      return (Number(p) || 0).toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec });
+    }
+    function formatCurrency(val, dec = 2) {
+      return '$' + formatPrice(val, dec);
+    }
+    function formatPercent(val) {
+      return (val > 0 ? '+' : '') + Number(val).toFixed(2) + '%';
+    }
+    function formatVolume(vol) {
+      if (vol >= 1e9) return (vol / 1e9).toFixed(2) + 'B';
+      if (vol >= 1e6) return (vol / 1e6).toFixed(2) + 'M';
+      if (vol >= 1e3) return (vol / 1e3).toFixed(1) + 'K';
+      return vol.toString();
+    }
+    function getTimeframeSeconds(tf) {
+      switch(tf) {
+        case '1s': return 1;
+        case '1m': return 60;
+        case '5m': return 300;
+        case '15m': return 900;
+        case '1h': return 3600;
+        case '1D': return 86400;
+        default: return 60;
+      }
+    }
+    function generateCandles(asset, timeframe, count = 120) {
+      const step = getTimeframeSeconds(timeframe);
+      const now = Math.floor(Date.now() / 1000);
+      const start = now - count * step;
+      const vol = asset.category === 'crypto' ? 0.0035 : 0.001;
+      const candles = [];
+      let cur = asset.price * (1 - (asset.change24h / 100) * 0.7);
+      for (let i = 0; i < count; i++) {
+        const time = start + i * step;
+        const drift = (Math.random() - 0.49) * vol * cur;
+        const open = cur;
+        const close = Math.max(open + drift, open * 0.85);
+        const high = Math.max(open, close) + Math.random() * Math.abs(drift) * 1.5;
+        const low = Math.min(open, close) - Math.random() * Math.abs(drift) * 1.5;
+        const volume = Math.round(50 * (0.4 + Math.random() * 1.8));
+        candles.push({ time, open: Number(open.toFixed(asset.decimals)), high: Number(high.toFixed(asset.decimals)), low: Number(low.toFixed(asset.decimals)), close: Number(close.toFixed(asset.decimals)), volume });
+        cur = close;
+      }
+      candles[candles.length - 1].close = asset.price;
+      return candles;
+    }
+    function generateOrderBook(price, decimals, depth = 10) {
+      const asks = [], bids = [];
+      let aP = price, bP = price, aTot = 0, bTot = 0;
+      for (let i = 0; i < depth; i++) {
+        aP += (1 + Math.random()) * Math.pow(10, -decimals + (decimals > 2 ? 1 : 0));
+        const aAmt = Number((Math.random() * 2 + 0.1).toFixed(3));
+        aTot += aAmt;
+        asks.push({ price: Number(aP.toFixed(decimals)), amount: aAmt, total: Number(aTot.toFixed(3)) });
+
+        bP -= (1 + Math.random()) * Math.pow(10, -decimals + (decimals > 2 ? 1 : 0));
+        const bAmt = Number((Math.random() * 2 + 0.1).toFixed(3));
+        bTot += bAmt;
+        bids.push({ price: Number(bP.toFixed(decimals)), amount: bAmt, total: Number(bTot.toFixed(3)) });
+      }
+      return { asks, bids };
+    }
+    function generateTrades(price, decimals, count = 20) {
+      const trades = [];
+      const now = Date.now();
+      for (let i = 0; i < count; i++) {
+        trades.push({
+          id: 'tr-' + (now - i * 1500),
+          price: Number((price + (Math.random() - 0.5) * 0.001 * price).toFixed(decimals)),
+          amount: Number((Math.random() * 1.5 + 0.02).toFixed(4)),
+          side: Math.random() > 0.48 ? 'buy' : 'sell',
+          time: now - i * 1500
+        });
+      }
+      return trades;
+    }
+
+    // --- Componente Principal ---
+    function App() {
+      const [assets, setAssets] = useState(INITIAL_ASSETS);
+      const [selectedAsset, setSelectedAsset] = useState(INITIAL_ASSETS[0]);
+      const prevPriceRef = useRef(INITIAL_ASSETS[0].price);
+
+      const [timeframe, setTimeframe] = useState('1m');
+      const [chartType, setChartType] = useState('candles');
+      const [indicators, setIndicators] = useState({ showSMA20: true, showEMA50: false, showBollinger: false, showVolume: true, showRSI: false });
+      const [candles, setCandles] = useState(() => generateCandles(INITIAL_ASSETS[0], '1m', 120));
+
+      const [orderBook, setOrderBook] = useState(() => generateOrderBook(INITIAL_ASSETS[0].price, INITIAL_ASSETS[0].decimals));
+      const [recentTrades, setRecentTrades] = useState(() => generateTrades(INITIAL_ASSETS[0].price, INITIAL_ASSETS[0].decimals));
+      const [selectedBookPrice, setSelectedBookPrice] = useState(null);
+
+      // Saldo Inicial Exacto: $10,000 USD
+      const [availableBalance, setAvailableBalance] = useState(10000.0);
+      const [positions, setPositions] = useState([]);
+      const [openOrders, setOpenOrders] = useState([]);
+      const [tradeHistory, setTradeHistory] = useState([]);
+
+      // Control de Simulación
+      const [isSimPaused, setIsSimPaused] = useState(false);
+      const [simSpeed, setSimSpeed] = useState(1);
+
+      // Modales
+      const [isDepositOpen, setIsDepositOpen] = useState(false);
+      const [isWithdrawOpen, setIsWithdrawOpen] = useState(false);
+      const [isAlertsOpen, setIsAlertsOpen] = useState(false);
+      const [alerts, setAlerts] = useState([]);
+      const [toasts, setToasts] = useState([]);
+
+      const addToast = useCallback((type, title, message) => {
+        const id = 'toast-' + Date.now() + Math.random();
+        setToasts(prev => [...prev, { id, type, title, message }]);
+        setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 4000);
+      }, []);
+
+      useEffect(() => {
+        setCandles(generateCandles(selectedAsset, timeframe, 120));
+        setOrderBook(generateOrderBook(selectedAsset.price, selectedAsset.decimals));
+        setRecentTrades(generateTrades(selectedAsset.price, selectedAsset.decimals));
+        prevPriceRef.current = selectedAsset.price;
+      }, [selectedAsset.id, timeframe]);
+
+      // Bucle de Mercado en Vivo
+      useEffect(() => {
+        if (isSimPaused) return;
+        const intervalTime = Math.max(250, Math.round(900 / simSpeed));
+        const interval = setInterval(() => {
+          const deltaRatio = (Math.random() - 0.495) * 0.0016;
+          const rawPrice = selectedAsset.price * (1 + deltaRatio);
+          const newPrice = Number(rawPrice.toFixed(selectedAsset.decimals));
+
+          setSelectedAsset(prev => {
+            const high24h = Math.max(prev.high24h, newPrice);
+            const low24h = Math.min(prev.low24h, newPrice);
+            const change24hAmount = prev.change24hAmount + (newPrice - prev.price);
+            const change24h = ((newPrice - (prev.price - prev.change24hAmount)) / (prev.price - prev.change24hAmount)) * 100;
+            return { ...prev, price: newPrice, high24h, low24h, change24h: Number(change24h.toFixed(2)), change24hAmount: Number(change24hAmount.toFixed(prev.decimals)) };
+          });
+
+          // Actualizar Velas
+          setCandles(prev => {
+            if (prev.length === 0) return prev;
+            const now = Math.floor(Date.now() / 1000);
+            const tf = getTimeframeSeconds(timeframe);
+            const last = { ...prev[prev.length - 1] };
+            if (now - last.time < tf) {
+              last.close = newPrice;
+              last.high = Math.max(last.high, newPrice);
+              last.low = Math.min(last.low, newPrice);
+              last.volume += Math.round(Math.random() * 5 + 1);
+              return [...prev.slice(0, -1), last];
+            } else {
+              const newC = { time: last.time + tf, open: newPrice, high: newPrice, low: newPrice, close: newPrice, volume: 15 };
+              return [...prev.slice(1), newC];
+            }
+          });
+
+          // Actualizar Libro
+          setOrderBook(generateOrderBook(newPrice, selectedAsset.decimals));
+          setRecentTrades(prev => [{ id: 'tr-' + Date.now(), price: newPrice, amount: Number((Math.random() * 1.2 + 0.05).toFixed(3)), side: Math.random() > 0.48 ? 'buy' : 'sell', time: Date.now() }, ...prev.slice(0, 25)]);
+
+          // Evaluar Posiciones y PnL
+          setPositions(posList => posList.map(pos => {
+            if (pos.assetId !== selectedAsset.id) return pos;
+            const diff = pos.side === 'long' ? newPrice - pos.entryPrice : pos.entryPrice - newPrice;
+            const pnl = diff * pos.amount;
+            const pnlPercent = pos.margin > 0 ? (pnl / pos.margin) * 100 : 0;
+            return { ...pos, markPrice: newPrice, pnl, pnlPercent };
+          }));
+
+          // Evaluar Alertas
+          setAlerts(curAlerts => {
+            let hit = false;
+            const updated = curAlerts.map(al => {
+              if (al.assetId !== selectedAsset.id || !al.active || al.triggered) return al;
+              const isAbove = al.condition === 'above' && newPrice >= al.targetPrice;
+              const isBelow = al.condition === 'below' && newPrice <= al.targetPrice;
+              if (isAbove || isBelow) {
+                hit = true;
+                addToast('warning', `¡Alerta: ${al.symbol}!`, `${al.symbol} ha tocado tu umbral de $${formatPrice(al.targetPrice, selectedAsset.decimals)}`);
+                return { ...al, triggered: true, active: false };
+              }
+              return al;
+            });
+            if (hit) playAlertSound();
+            return updated;
+          });
+
+        }, intervalTime);
+        return () => clearInterval(interval);
+      }, [selectedAsset.id, selectedAsset.price, isSimPaused, simSpeed, timeframe, addToast]);
+
+      const totalUnrealizedPnl = positions.reduce((acc, p) => acc + p.pnl, 0);
+      const totalMargin = positions.reduce((acc, p) => acc + p.margin, 0);
+      const totalEquity = availableBalance + totalMargin + totalUnrealizedPnl;
+
+      // Envío de Orden
+      const handleOrderSubmit = (side, type, priceVal, amountVal, lev) => {
+        const notional = priceVal * amountVal;
+        const margin = notional / lev;
+        if (margin > availableBalance) {
+          addToast('warning', 'Margen Insuficiente', 'Saldo insuficiente en tu cuenta.');
+          return;
+        }
+        setAvailableBalance(b => b - margin);
+        playOrderSound(side);
+        if (type === 'market') {
+          setPositions(prev => [{
+            id: 'pos-' + Date.now(), assetId: selectedAsset.id, symbol: selectedAsset.symbol,
+            side: side === 'buy' ? 'long' : 'short', entryPrice: priceVal, markPrice: priceVal,
+            amount: amountVal, margin, leverage: lev, pnl: 0, pnlPercent: 0, createdAt: Date.now()
+          }, ...prev]);
+          addToast('success', 'Orden Ejecutada', `${side === 'buy' ? 'Compra Long' : 'Venta Short'} de ${amountVal} ${selectedAsset.baseAsset}`);
+        } else {
+          setOpenOrders(prev => [{
+            id: 'ord-' + Date.now(), assetId: selectedAsset.id, symbol: selectedAsset.symbol,
+            side, type, price: priceVal, amount: amountVal, leverage: lev, createdAt: Date.now()
+          }, ...prev]);
+          addToast('info', 'Orden Límite Creada', `Colocada en el libro a $${priceVal}`);
+        }
+      };
+
+      const closePosition = id => {
+        const pos = positions.find(p => p.id === id);
+        if (!pos) return;
+        const net = pos.margin + pos.pnl;
+        setAvailableBalance(b => b + net);
+        setPositions(prev => prev.filter(p => p.id !== id));
+        setTradeHistory(prev => [{ id: 'th-' + Date.now(), symbol: pos.symbol, side: pos.side, entryPrice: pos.entryPrice, exitPrice: pos.markPrice, amount: pos.amount, realizedPnl: pos.pnl, closedAt: Date.now() }, ...prev]);
+        addToast(pos.pnl >= 0 ? 'success' : 'info', 'Posición Cerrada', `${pos.symbol} cerrada. PnL: ${formatCurrency(pos.pnl)}`);
+      };
+
+      return (
+        <div className="flex flex-col h-screen w-screen bg-slate-950 text-slate-100 overflow-hidden font-sans">
+          {/* Cabecera Principal */}
+          <header className="flex items-center justify-between gap-4 px-4 py-2.5 bg-slate-950 border-b border-slate-900 select-none shrink-0">
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                <div className="w-7 h-7 rounded bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 font-bold text-xs">▲</div>
+                <span className="font-extrabold text-base tracking-tight text-white">ApexTrade <span className="text-emerald-400 font-medium">Terminal</span></span>
+                <span className="hidden sm:inline-block text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 font-mono">FONDO BASE: $10,000</span>
+              </div>
+              <div className="h-5 w-px bg-slate-800" />
+              <select
+                value={selectedAsset.id}
+                onChange={e => setSelectedAsset(assets.find(a => a.id === e.target.value))}
+                className="bg-slate-900 border border-slate-800 rounded px-2.5 py-1 text-xs font-bold text-slate-100 focus:outline-none cursor-pointer"
+              >
+                {assets.map(a => (
+                  <option key={a.id} value={a.id}>{a.symbol} (${formatPrice(a.price, a.decimals)})</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Métricas de 24 horas */}
+            <div className="hidden lg:flex items-center gap-6 font-mono text-xs">
+              <div>
+                <span className="text-[10px] text-slate-400 block">Precio Actual</span>
+                <span className={`text-sm font-bold ${selectedAsset.change24h >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  ${formatPrice(selectedAsset.price, selectedAsset.decimals)}
+                </span>
+              </div>
+              <div>
+                <span className="text-[10px] text-slate-400 block">Var 24h</span>
+                <span className={`font-semibold ${selectedAsset.change24h >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  {formatPercent(selectedAsset.change24h)}
+                </span>
+              </div>
+              <div>
+                <span className="text-[10px] text-slate-400 block">Máximo 24h</span>
+                <span className="text-slate-200">${formatPrice(selectedAsset.high24h, selectedAsset.decimals)}</span>
+              </div>
+              <div>
+                <span className="text-[10px] text-slate-400 block">Mínimo 24h</span>
+                <span className="text-slate-200">${formatPrice(selectedAsset.low24h, selectedAsset.decimals)}</span>
+              </div>
+              <div>
+                <span className="text-[10px] text-slate-400 block">Volumen 24h</span>
+                <span className="text-slate-200">{formatVolume(selectedAsset.volume24h)} USDT</span>
+              </div>
+            </div>
+
+            {/* Controles de Simulación y Balance */}
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setIsSimPaused(!isSimPaused)}
+                className={`px-2 py-1 rounded text-xs border ${isSimPaused ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' : 'bg-slate-900 border-slate-800 text-slate-300'}`}
+              >
+                {isSimPaused ? '▶ Reanudar' : '❚❚ Pausar'}
+              </button>
+              <button
+                onClick={() => setIsAlertsOpen(true)}
+                className="flex items-center gap-1 px-2.5 py-1 bg-slate-900 border border-slate-800 rounded text-xs text-slate-300 hover:text-white"
+              >
+                <span>🔔 Alertas</span>
+                {alerts.filter(a => a.active && !a.triggered).length > 0 && (
+                  <span className="w-4 h-4 rounded-full bg-amber-500 text-slate-950 font-bold text-[10px] flex items-center justify-center">
+                    {alerts.filter(a => a.active && !a.triggered).length}
+                  </span>
+                )}
+              </button>
+              <div className="text-right pl-2 border-l border-slate-800">
+                <div className="text-[10px] text-slate-400">Patrimonio Cuenta</div>
+                <div className="font-mono text-xs font-bold text-slate-100">{formatCurrency(totalEquity)}</div>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button onClick={() => setIsDepositOpen(true)} className="px-2.5 py-1 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded cursor-pointer">+ Fondos</button>
+                <button onClick={() => setIsWithdrawOpen(true)} className="px-2.5 py-1 text-xs font-semibold bg-slate-900 hover:bg-slate-800 border border-slate-800 text-sky-400 rounded cursor-pointer">Retirar</button>
+              </div>
+            </div>
+          </header>
+
+          {/* Área de Gráficos y Libro */}
+          <div className="flex-1 grid grid-cols-12 min-h-0 overflow-hidden">
+            <div className="col-span-12 lg:col-span-7 xl:col-span-7 flex flex-col min-h-0 bg-slate-950 border-r border-slate-900">
+              <div className="flex items-center justify-between px-3 py-1.5 bg-slate-900/60 border-b border-slate-900 text-xs">
+                <div className="flex items-center gap-2">
+                  <div className="flex bg-slate-950 p-0.5 rounded border border-slate-800">
+                    {['1s', '1m', '5m', '15m', '1h', '1D'].map(tf => (
+                      <button key={tf} onClick={() => setTimeframe(tf)} className={`px-2 py-0.5 rounded text-xs font-medium ${timeframe === tf ? 'bg-slate-800 text-white' : 'text-slate-400'}`}>
+                        {tf}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex bg-slate-950 p-0.5 rounded border border-slate-800">
+                    <button onClick={() => setChartType('candles')} className={`px-2 py-0.5 rounded text-xs ${chartType === 'candles' ? 'bg-slate-800 text-emerald-400 font-bold' : 'text-slate-400'}`}>Velas</button>
+                    <button onClick={() => setChartType('bars')} className={`px-2 py-0.5 rounded text-xs ${chartType === 'bars' ? 'bg-slate-800 text-emerald-400 font-bold' : 'text-slate-400'}`}>Barras</button>
+                    <button onClick={() => setChartType('area')} className={`px-2 py-0.5 rounded text-xs ${chartType === 'area' ? 'bg-slate-800 text-emerald-400 font-bold' : 'text-slate-400'}`}>Línea</button>
+                  </div>
+                  <button onClick={() => setIndicators(i => ({ ...i, showRSI: !i.showRSI }))} className={`px-2 py-0.5 rounded border text-xs ${indicators.showRSI ? 'bg-purple-500/20 text-purple-300 border-purple-500/50' : 'bg-slate-950 border-slate-800 text-slate-400'}`}>
+                    RSI (14)
+                  </button>
+                </div>
+                <div className="text-slate-400 font-mono text-[11px]">
+                  {selectedAsset.symbol} · Cierre: <strong className="text-emerald-400">${formatPrice(selectedAsset.price, selectedAsset.decimals)}</strong>
+                </div>
+              </div>
+
+              {/* Lienzo Canvas HTML5 */}
+              <div className="flex-1 relative overflow-hidden">
+                <TradingCanvas candles={candles} currentPrice={selectedAsset.price} decimals={selectedAsset.decimals} chartType={chartType} indicators={indicators} alerts={alerts} symbol={selectedAsset.symbol} />
+              </div>
+            </div>
+
+            {/* Libro de Órdenes */}
+            <div className="hidden lg:flex lg:col-span-2 xl:col-span-2 flex-col min-h-0 bg-slate-950 border-r border-slate-900 text-xs">
+              <div className="p-2 border-b border-slate-900 font-bold text-slate-300 text-xs bg-slate-900/40">
+                Libro de Órdenes
+              </div>
+              <div className="flex-1 flex flex-col justify-end p-2 space-y-0.5 font-mono text-[11px]">
+                {orderBook.asks.slice(0, 7).reverse().map((a, i) => (
+                  <div key={i} onClick={() => setSelectedBookPrice(a.price)} className="flex justify-between cursor-pointer hover:bg-slate-900 px-1 py-0.5 rounded">
+                    <span className="text-rose-400 font-semibold">{formatPrice(a.price, selectedAsset.decimals)}</span>
+                    <span className="text-slate-400">{a.amount}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="py-2 px-3 bg-slate-900/80 border-y border-slate-900 flex justify-between items-center font-mono text-xs">
+                <span className="font-bold text-emerald-400">${formatPrice(selectedAsset.price, selectedAsset.decimals)}</span>
+                <span className="text-[10px] text-slate-400">Spread: 0.05%</span>
+              </div>
+              <div className="flex-1 p-2 space-y-0.5 font-mono text-[11px]">
+                {orderBook.bids.slice(0, 7).map((b, i) => (
+                  <div key={i} onClick={() => setSelectedBookPrice(b.price)} className="flex justify-between cursor-pointer hover:bg-slate-900 px-1 py-0.5 rounded">
+                    <span className="text-emerald-400 font-semibold">{formatPrice(b.price, selectedAsset.decimals)}</span>
+                    <span className="text-slate-400">{b.amount}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Formulario de Operaciones */}
+            <div className="col-span-12 lg:col-span-3 xl:col-span-3 flex flex-col min-h-0 bg-slate-950">
+              <OrderFormPanel asset={selectedAsset} currentPrice={selectedAsset.price} availableBalance={availableBalance} selectedPrice={selectedBookPrice} onSubmitOrder={handleOrderSubmit} />
+            </div>
+          </div>
+
+          {/* Panel Inferior */}
+          <div className="h-60 shrink-0 bg-slate-950 border-t border-slate-900 flex flex-col min-h-0 text-xs">
+            <PositionsPanel positions={positions} openOrders={openOrders} tradeHistory={tradeHistory} alerts={alerts} onClosePosition={closePosition} />
+          </div>
+
+          {/* Modales */}
+          {isDepositOpen && <DepositModal isOpen={isDepositOpen} onClose={() => setIsDepositOpen(false)} balance={availableBalance} onDeposit={amt => setAvailableBalance(b => b + amt)} onReset={() => { setAvailableBalance(10000); setPositions([]); setOpenOrders([]); addToast('info', 'Reiniciada', 'Cuenta restablecida a $10,000 inicial.'); }} />}
+          {isWithdrawOpen && <WithdrawModal isOpen={isWithdrawOpen} onClose={() => setIsWithdrawOpen(false)} balance={availableBalance} onWithdraw={amt => { setAvailableBalance(b => Math.max(0, b - amt)); addToast('success', 'Retiro Procesado', `Transferencia de $${amt} solicitada.`); }} />}
+          {isAlertsOpen && <AlertsModal isOpen={isAlertsOpen} onClose={() => setIsAlertsOpen(false)} asset={selectedAsset} alerts={alerts} onCreateAlert={al => { setAlerts(a => [{ id: 'al-' + Date.now(), ...al, active: true, triggered: false, createdAt: Date.now() }, ...a]); addToast('info', 'Alerta Creada', `Aviso al llegar a $${al.targetPrice}`); }} onDeleteAlert={id => setAlerts(a => a.filter(x => x.id !== id))} />}
+
+          {/* Notificaciones Toast */}
+          <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm w-full pointer-events-none">
+            {toasts.map(t => (
+              <div key={t.id} className="pointer-events-auto p-3 rounded-lg border bg-slate-900/95 border-emerald-500/40 text-xs shadow-2xl flex items-start gap-2 animate-in slide-in-from-right">
+                <span className="text-emerald-400 font-bold">●</span>
+                <div>
+                  <div className="font-bold text-white">{t.title}</div>
+                  <div className="text-slate-400 text-[11px]">{t.message}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    // --- Lienzo Gráfico de Alta Precisión ---
+    function TradingCanvas({ candles, currentPrice, decimals, chartType, indicators, alerts, symbol }) {
+      const canvasRef = useRef(null);
+      const containerRef = useRef(null);
+
+      useEffect(() => {
+        const canvas = canvasRef.current;
+        const container = containerRef.current;
+        if (!canvas || !container || candles.length === 0) return;
+        const dpr = window.devicePixelRatio || 1;
+        const rect = container.getBoundingClientRect();
+        canvas.width = rect.width * dpr;
+        canvas.height = rect.height * dpr;
+        const ctx = canvas.getContext('2d');
+        ctx.scale(dpr, dpr);
+
+        const w = rect.width;
+        const h = rect.height;
+        ctx.fillStyle = '#090d16';
+        ctx.fillRect(0, 0, w, h);
+
+        const padRight = 70;
+        const padBottom = 26;
+        const mainH = indicators.showRSI ? h * 0.75 - padBottom : h - padBottom;
+        const chartW = w - padRight;
+
+        let minP = Math.min(...candles.map(c => c.low));
+        let maxP = Math.max(...candles.map(c => c.high));
+        const pRange = maxP - minP || 1;
+        minP -= pRange * 0.06; maxP += pRange * 0.06;
+
+        const candleW = chartW / candles.length;
+        const getY = p => mainH - ((p - minP) / (maxP - minP)) * mainH;
+
+        // Cuadrícula y Escala
+        ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+        ctx.fillStyle = '#64748b';
+        ctx.font = '10px "JetBrains Mono"';
+        for (let i = 0; i <= 5; i++) {
+          const val = minP + (pRange * i) / 5;
+          const y = getY(val);
+          ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(chartW, y); ctx.stroke();
+          ctx.fillText(formatPrice(val, decimals), chartW + 6, y + 4);
+        }
+
+        // Velas
+        candles.forEach((c, idx) => {
+          const x = idx * candleW + candleW / 2;
+          const isBull = c.close >= c.open;
+          ctx.strokeStyle = isBull ? '#10b981' : '#f43f5e';
+          ctx.fillStyle = isBull ? '#10b981' : '#f43f5e';
+
+          // Mecha
+          ctx.beginPath();
+          ctx.moveTo(x, getY(c.high));
+          ctx.lineTo(x, getY(c.low));
+          ctx.stroke();
+
+          // Cuerpo
+          const top = Math.min(getY(c.open), getY(c.close));
+          const bH = Math.max(2, Math.abs(getY(c.close) - getY(c.open)));
+          ctx.fillRect(x - candleW * 0.35, top, candleW * 0.7, bH);
+        });
+
+        // Línea de Precio Actual
+        const curY = getY(currentPrice);
+        ctx.strokeStyle = 'rgba(16, 185, 129, 0.7)';
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath(); ctx.moveTo(0, curY); ctx.lineTo(chartW, curY); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#10b981';
+        ctx.fillRect(chartW + 1, curY - 10, padRight - 2, 20);
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 10px "JetBrains Mono"';
+        ctx.fillText(formatPrice(currentPrice, decimals), chartW + 6, curY + 4);
+
+        // Alertas Activas en Gráfico
+        alerts.filter(a => a.symbol === symbol && a.active && !a.triggered).forEach(al => {
+          const ay = getY(al.targetPrice);
+          if (ay >= 0 && ay <= mainH) {
+            ctx.strokeStyle = '#f59e0b';
+            ctx.setLineDash([3, 3]);
+            ctx.beginPath(); ctx.moveTo(0, ay); ctx.lineTo(chartW, ay); ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.fillStyle = '#f59e0b';
+            ctx.fillRect(chartW + 1, ay - 9, padRight - 2, 18);
+            ctx.fillStyle = '#0f172a';
+            ctx.fillText(formatPrice(al.targetPrice, decimals), chartW + 6, ay + 4);
+          }
+        });
+
+      }, [candles, currentPrice, decimals, chartType, indicators, alerts, symbol]);
+
+      return (
+        <div ref={containerRef} className="w-full h-full relative cursor-crosshair">
+          <canvas ref={canvasRef} className="w-full h-full block" />
+        </div>
+      );
+    }
+
+    // --- Panel de Órdenes ---
+    function OrderFormPanel({ asset, currentPrice, availableBalance, selectedPrice, onSubmitOrder }) {
+      const [side, setSide] = useState('buy');
+      const [orderType, setOrderType] = useState('market');
+      const [priceVal, setPriceVal] = useState(currentPrice.toString());
+      const [amountVal, setAmountVal] = useState('0.1');
+      const [leverage, setLeverage] = useState(10);
+
+      useEffect(() => {
+        if (selectedPrice) { setPriceVal(selectedPrice.toString()); setOrderType('limit'); }
+      }, [selectedPrice]);
+
+      const effPrice = orderType === 'market' ? currentPrice : parseFloat(priceVal) || currentPrice;
+      const amtNum = parseFloat(amountVal) || 0;
+      const notional = effPrice * amtNum;
+      const margin = notional / leverage;
+
+      const handleSubmit = e => {
+        e.preventDefault();
+        if (amtNum <= 0 || margin > availableBalance) return;
+        onSubmitOrder(side, orderType, effPrice, amtNum, leverage);
+      };
+
+      return (
+        <form onSubmit={handleSubmit} className="p-3.5 space-y-3.5 flex flex-col h-full text-xs">
+          <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-900 rounded border border-slate-800">
+            <button type="button" onClick={() => setSide('buy')} className={`py-2 rounded font-bold text-xs ${side === 'buy' ? 'bg-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>Comprar / Long</button>
+            <button type="button" onClick={() => setSide('sell')} className={`py-2 rounded font-bold text-xs ${side === 'sell' ? 'bg-rose-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>Vender / Short</button>
+          </div>
+          <div>
+            <span className="text-[11px] text-slate-400 block mb-1">Apalancamiento: <strong className="text-emerald-400">{leverage}x</strong></span>
+            <div className="grid grid-cols-5 gap-1">
+              {[1, 5, 10, 25, 50].map(l => (
+                <button type="button" key={l} onClick={() => setLeverage(l)} className={`py-1 rounded font-mono text-[11px] ${leverage === l ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40' : 'bg-slate-900 border border-slate-800 text-slate-400'}`}>{l}x</button>
+              ))}
+            </div>
+          </div>
+          {orderType !== 'market' && (
+            <div>
+              <span className="text-[11px] text-slate-400 block mb-1">Precio Límite ({asset.quoteAsset})</span>
+              <input type="number" step="any" value={priceVal} onChange={e => setPriceVal(e.target.value)} className="w-full bg-slate-900 border border-slate-800 rounded px-3 py-1.5 font-mono text-white focus:outline-none" />
+            </div>
+          )}
+          <div>
+            <div className="flex justify-between text-[11px] text-slate-400 mb-1">
+              <span>Cantidad ({asset.baseAsset})</span>
+              <span>Disp: <strong className="text-emerald-400 font-mono">${formatPrice(availableBalance)}</strong></span>
+            </div>
+            <input type="number" step="any" value={amountVal} onChange={e => setAmountVal(e.target.value)} className="w-full bg-slate-900 border border-slate-800 rounded px-3 py-1.5 font-mono text-white focus:outline-none" />
+          </div>
+          <div className="p-2.5 bg-slate-900/60 rounded border border-slate-900 font-mono text-[11px] space-y-1">
+            <div className="flex justify-between text-slate-400"><span>Valor Nocional:</span><span>{formatCurrency(notional)}</span></div>
+            <div className="flex justify-between text-slate-400"><span>Margen Requerido:</span><span className="text-slate-200">{formatCurrency(margin)}</span></div>
+          </div>
+          <button type="submit" disabled={amtNum <= 0 || margin > availableBalance} className={`w-full py-2.5 rounded font-bold text-xs uppercase tracking-wider ${side === 'buy' ? 'bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer' : 'bg-rose-600 hover:bg-rose-500 text-white cursor-pointer'}`}>
+            {side === 'buy' ? `Comprar / Long ${asset.baseAsset}` : `Vender / Short ${asset.baseAsset}`}
+          </button>
+        </form>
+      );
+    }
+
+    // --- Posiciones e Historial ---
+    function PositionsPanel({ positions, openOrders, tradeHistory, alerts, onClosePosition }) {
+      const [tab, setTab] = useState('pos');
+      return (
+        <div className="flex flex-col h-full">
+          <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-900/60 border-b border-slate-900">
+            <button onClick={() => setTab('pos')} className={`px-3 py-1 rounded text-xs font-semibold ${tab === 'pos' ? 'bg-slate-800 text-white' : 'text-slate-400'}`}>Posiciones ({positions.length})</button>
+            <button onClick={() => setTab('ord')} className={`px-3 py-1 rounded text-xs font-semibold ${tab === 'ord' ? 'bg-slate-800 text-white' : 'text-slate-400'}`}>Órdenes ({openOrders.length})</button>
+            <button onClick={() => setTab('hist')} className={`px-3 py-1 rounded text-xs font-semibold ${tab === 'hist' ? 'bg-slate-800 text-white' : 'text-slate-400'}`}>Historial ({tradeHistory.length})</button>
+            <button onClick={() => setTab('al')} className={`px-3 py-1 rounded text-xs font-semibold ${tab === 'al' ? 'bg-slate-800 text-amber-300' : 'text-slate-400'}`}>Alertas ({alerts.length})</button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-3 font-mono text-[11px]">
+            {tab === 'pos' && (
+              positions.length === 0 ? <div className="text-slate-500 text-center py-6">No hay posiciones abiertas actualmente.</div> : (
+                <table className="w-full text-left">
+                  <thead className="text-slate-500 border-b border-slate-900 uppercase">
+                    <tr><th className="py-1">Símbolo</th><th>Lado</th><th>Tamaño</th><th>Entrada</th><th>Precio Marca</th><th>PnL</th><th>Acción</th></tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-900">
+                    {positions.map(p => (
+                      <tr key={p.id}>
+                        <td className="py-2 text-white font-bold">{p.symbol} ({p.leverage}x)</td>
+                        <td className={p.side === 'long' ? 'text-emerald-400 uppercase font-bold' : 'text-rose-400 uppercase font-bold'}>{p.side}</td>
+                        <td>{p.amount}</td>
+                        <td>${formatPrice(p.entryPrice)}</td>
+                        <td>${formatPrice(p.markPrice)}</td>
+                        <td className={p.pnl >= 0 ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold'}>{formatCurrency(p.pnl)} ({formatPercent(p.pnlPercent)})</td>
+                        <td><button onClick={() => onClosePosition(p.id)} className="px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-slate-300 hover:text-white">Cerrar</button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )
+            )}
+            {tab === 'ord' && (
+              openOrders.length === 0 ? <div className="text-slate-500 text-center py-6">No hay órdenes límite pendientes.</div> : (
+                <div>{openOrders.map(o => <div key={o.id} className="py-1">{o.symbol} · {o.side} {o.amount} @ ${o.price}</div>)}</div>
+              )
+            )}
+            {tab === 'hist' && (
+              tradeHistory.length === 0 ? <div className="text-slate-500 text-center py-6">Sin historial cerrado todavía.</div> : (
+                <div>{tradeHistory.map(h => <div key={h.id} className="py-1 flex justify-between"><span>{h.symbol} · {h.side}</span><span className={h.realizedPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}>{formatCurrency(h.realizedPnl)}</span></div>)}</div>
+              )
+            )}
+            {tab === 'al' && (
+              alerts.length === 0 ? <div className="text-slate-500 text-center py-6">Sin alertas configuradas.</div> : (
+                <div>{alerts.map(a => <div key={a.id} className="py-1 flex justify-between"><span>{a.symbol} ({a.condition === 'above' ? '≥' : '≤'}) ${formatPrice(a.targetPrice)}</span><span className="text-amber-400">{a.triggered ? 'ALCANZADA' : 'ACTIVA'}</span></div>)}</div>
+              )
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // --- Modales ---
+    function DepositModal({ isOpen, onClose, balance, onDeposit, onReset }) {
+      if (!isOpen) return null;
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4">
+          <div className="w-full max-w-sm bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+              <h3 className="font-bold text-white text-sm">Gestión de Fondos</h3>
+              <button onClick={onClose} className="text-slate-400 hover:text-white">✕</button>
+            </div>
+            <div className="text-xs text-slate-400">Saldo actual: <strong className="text-emerald-400 font-mono">{formatCurrency(balance)}</strong></div>
+            <div className="grid grid-cols-3 gap-2">
+              {[1000, 5000, 10000].map(amt => (
+                <button key={amt} onClick={() => { onDeposit(amt); onClose(); }} className="py-2 bg-slate-800 hover:bg-slate-700 text-white rounded text-xs font-mono font-bold">+{formatCurrency(amt, 0)}</button>
+              ))}
+            </div>
+            <button onClick={() => { onReset(); onClose(); }} className="w-full py-2 bg-rose-900/40 border border-rose-700 text-rose-300 rounded text-xs font-bold">Restablecer a $10,000 inicial</button>
+          </div>
+        </div>
+      );
+    }
+
+    function WithdrawModal({ isOpen, onClose, balance, onWithdraw }) {
+      const [amt, setAmt] = useState('1000');
+      const [bank, setBank] = useState('Banco Santander / BBVA / Pichincha');
+      const [acc, setAcc] = useState('1234567890');
+      if (!isOpen) return null;
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4">
+          <div className="w-full max-w-sm bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-3.5 text-xs">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+              <h3 className="font-bold text-white text-sm">Retiro a Cuenta Bancaria</h3>
+              <button onClick={onClose} className="text-slate-400 hover:text-white">✕</button>
+            </div>
+            <div>
+              <span className="text-slate-400 block mb-1">Banco:</span>
+              <input value={bank} onChange={e => setBank(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-1.5 text-white" />
+            </div>
+            <div>
+              <span className="text-slate-400 block mb-1">Número de Cuenta / IBAN:</span>
+              <input value={acc} onChange={e => setAcc(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-1.5 text-white font-mono" />
+            </div>
+            <div>
+              <span className="text-slate-400 block mb-1">Monto a Retirar (USDT):</span>
+              <input type="number" value={amt} onChange={e => setAmt(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-1.5 text-white font-mono" />
+            </div>
+            <button onClick={() => { onWithdraw(parseFloat(amt) || 0); onClose(); }} className="w-full py-2 bg-sky-600 hover:bg-sky-500 text-white rounded font-bold text-xs cursor-pointer">Procesar Transferencia Bancaria</button>
+          </div>
+        </div>
+      );
+    }
+
+    function AlertsModal({ isOpen, onClose, asset, alerts, onCreateAlert, onDeleteAlert }) {
+      const [targetP, setTargetP] = useState((asset.price * 1.01).toFixed(asset.decimals));
+      const [cond, setCond] = useState('above');
+      if (!isOpen) return null;
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4">
+          <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-3.5 text-xs">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+              <h3 className="font-bold text-white text-sm">Alertas de Precio: {asset.symbol}</h3>
+              <button onClick={onClose} className="text-slate-400 hover:text-white">✕</button>
+            </div>
+            <div>
+              <span className="text-slate-400 block mb-1">Precio Umbral:</span>
+              <input type="number" step="any" value={targetP} onChange={e => setTargetP(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-1.5 text-white font-mono" />
+            </div>
+            <div className="flex gap-2">
+              <button type="button" onClick={() => setCond('above')} className={`flex-1 py-1.5 rounded font-bold ${cond === 'above' ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-400'}`}>≥ Sube a</button>
+              <button type="button" onClick={() => setCond('below')} className={`flex-1 py-1.5 rounded font-bold ${cond === 'below' ? 'bg-rose-600 text-white' : 'bg-slate-800 text-slate-400'}`}>≤ Cae a</button>
+            </div>
+            <button onClick={() => { onCreateAlert({ assetId: asset.id, symbol: asset.symbol, targetPrice: parseFloat(targetP) || 0, condition: cond }); onClose(); }} className="w-full py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded text-xs cursor-pointer">Establecer Alerta</button>
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.render(<App />, document.getElementById('root'));
+  </script>
+</body>
+</html>
